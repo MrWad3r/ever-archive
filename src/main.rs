@@ -62,7 +62,7 @@ enum Subcommand {
 #[derive(argh::FromArgs)]
 #[argh(subcommand, name = "check")]
 struct CmdCheck {
-    /// path to the archive if specified. stdin is used otherwise
+    /// path to the archive file or folder if specified. stdin is used otherwise
     #[argh(option)]
     path: Option<PathBuf>,
 
@@ -73,9 +73,35 @@ struct CmdCheck {
 
 impl CmdCheck {
     fn run(self) -> Result<()> {
+        match self.path {
+            Some(path) if path.is_dir() => {
+                let mut files = Vec::new();
+
+                let mut entries = std::fs::read_dir(path)?;
+                while let Some(entry) = entries.next() {
+                    let path = entry?.path();
+                    if path.is_file() {
+                        files.push(path);
+                    }
+                }
+
+                files.sort();
+
+                let pg = indicatif::ProgressBar::new(files.len() as u64);
+                for path in files {
+                    Self::check_archive(Some(path), self.show_features)?;
+                    pg.inc(1);
+                }
+                Ok(())
+            }
+            path => Self::check_archive(path, self.show_features),
+        }
+    }
+
+    fn check_archive(path: Option<PathBuf>, show_features: bool) -> Result<()> {
         use std::collections::hash_map;
 
-        let archive = RawArchive::new(self.path)?;
+        let archive = RawArchive::new(path)?;
         let archive = archive.view()?;
 
         let archive = ArchiveData::new(archive.as_ref()).context("Failed to parse archive")?;
@@ -199,7 +225,7 @@ impl CmdCheck {
             ids: last_blocks.into_values().collect(),
         };
 
-        if self.show_features {
+        if show_features {
             for list in [key_blocks, merges, splits, first_blocks, last_blocks] {
                 if !list.is_empty() {
                     print!("{list}");
