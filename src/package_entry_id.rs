@@ -1,6 +1,7 @@
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::str::FromStr;
+use everscale_types::models as ton_block;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub enum PackageEntryId<I> {
@@ -9,7 +10,7 @@ pub enum PackageEntryId<I> {
     ProofLink(I),
 }
 
-impl PackageEntryId<ton_block::BlockIdExt> {
+impl PackageEntryId<ton_block::BlockId> {
     pub fn from_filename(filename: &str) -> Result<Self, PackageEntryIdError> {
         let block_id_pos = match filename.find('(') {
             Some(pos) => pos,
@@ -28,8 +29,8 @@ impl PackageEntryId<ton_block::BlockIdExt> {
 }
 
 impl<I> PackageEntryId<I>
-where
-    I: Borrow<ton_block::BlockIdExt> + Hash,
+    where
+        I: Borrow<ton_block::BlockId> + Hash,
 {
     fn filename_prefix(&self) -> &'static str {
         match self {
@@ -44,13 +45,13 @@ pub trait GetFileName {
     fn filename(&self) -> String;
 }
 
-impl GetFileName for ton_block::BlockIdExt {
+impl GetFileName for ton_block::BlockId {
     fn filename(&self) -> String {
         format!(
             "({},{:016x},{}):{}:{}",
-            self.shard_id.workchain_id(),
-            self.shard_id.shard_prefix_with_tag(),
-            self.seq_no,
+            self.shard.workchain(),
+            self.shard.prefix(),
+            self.seqno,
             hex::encode_upper(self.root_hash.as_slice()),
             hex::encode_upper(self.file_hash.as_slice())
         )
@@ -58,8 +59,8 @@ impl GetFileName for ton_block::BlockIdExt {
 }
 
 impl<I> GetFileName for PackageEntryId<I>
-where
-    I: Borrow<ton_block::BlockIdExt> + Hash,
+    where
+        I: Borrow<ton_block::BlockId> + Hash,
 {
     fn filename(&self) -> String {
         match self {
@@ -70,7 +71,7 @@ where
     }
 }
 
-fn parse_block_id(filename: &str) -> Result<ton_block::BlockIdExt, PackageEntryIdError> {
+fn parse_block_id(filename: &str) -> Result<ton_block::BlockId, PackageEntryIdError> {
     let mut parts = filename.split(':');
 
     let shard_id = match parts.next() {
@@ -102,28 +103,28 @@ fn parse_block_id(filename: &str) -> Result<ton_block::BlockIdExt, PackageEntryI
         None => return Err(PackageEntryIdError::SeqnoNotFound),
     };
 
-    let shard_id = ton_block::ShardIdent::with_tagged_prefix(workchain_id, shard_prefix_tagged)
-        .map_err(|_| PackageEntryIdError::InvalidShardPrefix)?;
+    let shard_id = ton_block::ShardIdent::new(workchain_id, shard_prefix_tagged)
+        .ok_or(PackageEntryIdError::InvalidShardPrefix)?;
 
     let root_hash = match parts.next() {
         Some(part) => {
-            ton_types::UInt256::from_str(part).map_err(|_| PackageEntryIdError::InvalidRootHash)?
+            hex::decode(part).map_err(|_| PackageEntryIdError::InvalidRootHash)?
         }
         None => return Err(PackageEntryIdError::RootHashNotFound),
     };
 
     let file_hash = match parts.next() {
         Some(part) => {
-            ton_types::UInt256::from_str(part).map_err(|_| PackageEntryIdError::InvalidFileHash)?
+            hex::decode(part).map_err(|_| PackageEntryIdError::InvalidFileHash)?
         }
         None => return Err(PackageEntryIdError::FileHashNotFound),
     };
 
-    Ok(ton_block::BlockIdExt {
-        shard_id,
-        seq_no,
-        root_hash,
-        file_hash,
+    Ok(ton_block::BlockId {
+        shard: shard_id,
+        seqno: seq_no,
+        root_hash: root_hash.try_into().unwrap(),
+        file_hash: file_hash.try_into().unwrap(),
     })
 }
 

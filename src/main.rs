@@ -2,10 +2,23 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use ever_archive::utils::*;
+use archive_uploader::{ArchiveUploaderConfig, AwsCredentials};
+use everscale_types::models as ton_block;
+use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+use tokio::sync::{Barrier, Semaphore};
+
 use ever_archive::*;
+use ever_archive::utils::*;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 
 fn main() {
     if let Err(e) = argh::from_env::<App>().run() {
@@ -26,12 +39,13 @@ impl App {
         match self.subcommand {
             Subcommand::Check(cmd) => cmd.run(),
             Subcommand::List(cmd) => cmd.run(),
+            Subcommand::Upload(cmd) => cmd.run(),
         }
     }
 }
 
 struct ListEntry<'a> {
-    package_id: Result<PackageEntryId<ton_block::BlockIdExt>, PackageEntryIdError>,
+    package_id: Result<PackageEntryId<ton_block::BlockId>, PackageEntryIdError>,
     data: &'a [u8],
     with_size: bool,
 }
@@ -56,6 +70,7 @@ impl std::fmt::Display for ListEntry<'_> {
 enum Subcommand {
     Check(CmdCheck),
     List(CmdList),
+    Upload(CmdUpload),
 }
 
 /// Verifies the archive
@@ -75,19 +90,7 @@ impl CmdCheck {
     fn run(self) -> Result<()> {
         match self.path {
             Some(path) if path.is_dir() => {
-                let mut files = Vec::new();
-
-                let mut entries = std::fs::read_dir(path)?;
-                while let Some(entry) = entries.next() {
-                    let path = entry?.path();
-                    if path.is_file() {
-                        files.push(path);
-                    }
-                }
-
-                files.sort();
-
-                let pg = indicatif::ProgressBar::new(files.len() as u64);
+                let (files, pg) = init_archive_walker(path);
                 for path in files {
                     Self::check_archive(Some(path), self.show_features)?;
                     pg.inc(1);
@@ -108,7 +111,7 @@ impl CmdCheck {
 
         struct SimpleList {
             name: &'static str,
-            ids: BTreeSet<ton_block::BlockIdExt>,
+            ids: BTreeSet<ton_block::BlockId>,
         }
 
         impl SimpleList {
@@ -141,41 +144,49 @@ impl CmdCheck {
 
         fn insert_id_if(
             map: &mut SeqNoMap,
-            id: &ton_block::BlockIdExt,
-            mut f: impl FnMut(&ton_block::BlockIdExt) -> bool,
+            id: &ton_block::BlockId,
+            mut f: impl FnMut(&ton_block::BlockId) -> bool,
         ) {
-            if let hash_map::Entry::Occupied(mut entry) = map.entry(id.shard_id) {
+            if let hash_map::Entry::Occupied(mut entry) = map.entry(id.shard) {
                 if f(entry.get()) {
-                    entry.insert(id.clone());
+                    entry.insert(*id);
                 }
             }
         }
 
-        type SeqNoMap = HashMap<ton_block::ShardIdent, ton_block::BlockIdExt>;
+        type SeqNoMap = HashMap<ton_block::ShardIdent, ton_block::BlockId>;
 
-        let read_shard_blocks = |id: &ton_block::BlockIdExt| -> Result<SeqNoMap> {
+        let read_shard_blocks = |id: &ton_block::BlockId| -> Result<SeqNoMap> {
             let entry = archive.blocks.get(id).context("Failed to get mc block")?;
             let ((block, _), _) = entry.get_data().context("Missing data for mc block")?;
-            let extra = block.read_extra().context("Failed to read block extra")?;
+            let extra = block.load_extra().context("Failed to read block extra")?;
             let custom = extra
-                .read_custom()
+                .load_custom()
                 .context("Failed to read extra custom")?
                 .context("Masterchain block must contain custom")?;
 
             let mut shards = SeqNoMap::new();
-            shards.insert(id.shard_id, id.clone());
-            custom.hashes().iterate_shards(|ident, descr| {
-                shards.insert(
-                    ident,
-                    ton_block::BlockIdExt {
-                        shard_id: ident,
-                        seq_no: descr.seq_no,
-                        root_hash: descr.root_hash,
-                        file_hash: descr.file_hash,
-                    },
-                );
-                Ok(true)
-            })?;
+            shards.insert(id.shard, *id);
+            custom.shards.iter()
+                .filter_map(|x|
+                    match x {
+                        Ok(t) => { Some((t.0, t.1)) }
+                        Err(e) => {
+                            eprintln!("Invalid shard description in mc block {id}: {e}");
+                            None
+                        }
+                    })
+                .for_each(|(ident, descr)| {
+                    shards.insert(
+                        ident,
+                        ton_block::BlockId {
+                            shard: ident,
+                            seqno: descr.seqno,
+                            root_hash: descr.root_hash,
+                            file_hash: descr.file_hash,
+                        },
+                    );
+                });
 
             Ok(shards)
         };
@@ -197,23 +208,22 @@ impl CmdCheck {
                 .with_context(|| format!("Missing data for block {id}"))?;
 
             let info = block
-                .read_info()
+                .load_info()
                 .with_context(|| format!("Invalid block data ({id})"))?;
 
-            info.read_master_id()?;
 
-            if info.key_block() {
-                key_blocks.ids.insert(id.clone());
+            if info.key_block {
+                key_blocks.ids.insert(id);
             }
-            if info.after_merge() {
-                merges.ids.insert(id.clone());
+            if info.after_merge {
+                merges.ids.insert(id);
             }
-            if info.after_split() {
-                splits.ids.insert(id.clone());
+            if info.after_split {
+                splits.ids.insert(id);
             }
 
-            insert_id_if(&mut first_blocks, &id, |v| id.seq_no < v.seq_no);
-            insert_id_if(&mut last_blocks, &id, |v| id.seq_no > v.seq_no);
+            insert_id_if(&mut first_blocks, &id, |v| id.seqno < v.seqno);
+            insert_id_if(&mut last_blocks, &id, |v| id.seqno > v.seqno);
         }
 
         let first_blocks = SimpleList {
@@ -235,6 +245,23 @@ impl CmdCheck {
 
         Ok(())
     }
+}
+
+fn init_archive_walker(path: PathBuf) -> (Vec<PathBuf>, ProgressBar) {
+    let mut files: Vec<_> = walkdir::WalkDir::new(path).into_iter().filter_map(|x| x.ok())
+        .filter(|x| x.file_type().is_file()).map(|x| x.into_path()).
+        filter(|x| if let Some(ext) = x.extension() {
+            ext == "pack"
+        } else { false }
+        ).collect();
+
+    files.sort();
+
+    let pg = indicatif::ProgressBar::new(files.len() as u64)
+        .with_style(ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {human_pos}/{human_len} ETA: {eta_precise}. RPS: {per_sec}")
+            .unwrap()
+            .progress_chars("##-"));
+    (files, pg)
 }
 
 /// Lists all archive package entries
@@ -279,6 +306,114 @@ impl CmdList {
         Ok(())
     }
 }
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "upload")]
+/// Uploads archive to the cloud storage
+struct CmdUpload {
+    #[argh(option, short = 'p')]
+    /// path to the archive root directory
+    path: PathBuf,
+
+    /// name of the endpoint (e.g. `"eu-east-2"`)
+    #[argh(option)]
+    pub name: String,
+
+    /// endpoint to be used. For instance, `"https://s3.my-provider.net"` or just
+    /// `"s3.my-provider.net"` (default scheme is https).
+    #[argh(option)]
+    pub endpoint: String,
+
+    /// bucket name
+    #[argh(option)]
+    pub bucket: String,
+
+    /// aws access key ID
+    #[argh(option)]
+    pub access_key: String,
+
+    /// aws secret access key
+    #[argh(option)]
+    pub secret_key: String,
+}
+
+impl CmdUpload {
+    fn run(self) -> Result<()> {
+        let runner = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        let creds = AwsCredentials {
+            access_key: self.access_key,
+            secret_key: self.secret_key,
+            token: None,
+        };
+        let config = ArchiveUploaderConfig {
+            name: self.name,
+            endpoint: self.endpoint,
+            bucket: self.bucket,
+            archive_key_prefix: "".to_string(),
+            archives_search_interval_sec: 600,
+            retry_interval_ms: 100,
+            credentials: Some(creds),
+
+        };
+        let s3_client = runner.block_on(archive_uploader::ArchiveUploader::new(config)).context("Failed to create s3 client")?;
+
+        let (files, pg) = init_archive_walker(self.path);
+        let semaphore = Arc::new(Semaphore::new(128));
+        let barier = Arc::new(Barrier::new(files.len() + 1));
+
+        for file in files {
+            let semaphore = semaphore.clone();
+            let s3_client = s3_client.clone();
+            let pg = pg.clone();
+            let barier = barier.clone();
+
+            runner.spawn(async move {
+                let permit = semaphore.acquire().await.unwrap();
+                let data = match tokio::fs::read(&file).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        eprintln!("Failed to read file {}: {}", file.display(), e);
+                        return;
+                    }
+                };
+                let archive = match ArchiveData::new(&data) {
+                    Ok(archive) => archive,
+                    Err(e) => {
+                        eprintln!("Failed to parse archive {}: {}", file.display(), e);
+                        return;
+                    }
+                };
+                if let Err(e) = archive.check() {
+                    eprintln!("Failed to check archive {}: {}", file.display(), e);
+                    return;
+                }
+                let lowest_id = match archive.lowest_mc_id() {
+                    Some(id) => id.seqno,
+                    None => {
+                        eprintln!("Archive {} is empty", file.display());
+                        return;
+                    }
+                };
+                drop(archive);
+
+                s3_client.upload(lowest_id, data).await;
+
+                pg.inc(1);
+                drop(permit);
+
+                barier.wait().await;
+            });
+        }
+        runner.block_on(barier.wait());
+
+        Ok(())
+    }
+}
+
 
 enum RawArchive {
     Bytes(Vec<u8>),

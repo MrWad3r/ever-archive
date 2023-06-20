@@ -4,12 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.56"
-argh = "0.1.7"
+anyhow = "1.0.70"
+argh = "0.1.10"
 hex = "0.4.3"
-indicatif = "0.17.0"
+indicatif = "0.17.3"
 libc = "0.2"
-thiserror = "1.0.30"
+thiserror = "1.0.40"
 
-ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
-ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
+#ton_block = { git = "https://github.com/broxus/ton-labs-block.git" }
+#ton_types = { git = "https://github.com/broxus/ton-labs-types.git" }
+everscale-types = "0.1.0-pre.9"
+walkdir = "2.3.3"
+
+tikv-jemallocator = { version = "0.5.0", features = ["unprefixed_malloc_on_supported_platforms", "background_threads"] }
+
+archive-uploader = {git ="https://github.com/broxus/ton-indexer"}
+tokio = { version = "1.27.0", features = ["full"] }
+sha2 = "0.10.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+debug = false

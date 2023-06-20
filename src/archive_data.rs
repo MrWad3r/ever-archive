@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-use ton_block::Deserializable;
+use everscale_types::cell::Load;
+use sha2::Digest;
 
 use crate::archive_package::*;
 use crate::package_entry_id::*;
+use everscale_types::models as ton_block;
 
 pub struct ArchiveData<'a> {
-    pub mc_block_ids: BTreeMap<u32, ton_block::BlockIdExt>,
-    pub blocks: BTreeMap<ton_block::BlockIdExt, ArchiveDataEntry<'a>>,
+    pub mc_block_ids: BTreeMap<u32, ton_block::BlockId>,
+    pub blocks: BTreeMap<ton_block::BlockId, ArchiveDataEntry<'a>>,
 }
 
 impl<'a> ArchiveData<'a> {
@@ -27,27 +28,27 @@ impl<'a> ArchiveData<'a> {
                     let block = deserialize_block(&id, entry.data)?;
 
                     res.blocks
-                        .entry(id.clone())
+                        .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
                         .block = Some((block, entry.data));
-                    if id.shard_id.is_masterchain() {
-                        res.mc_block_ids.insert(id.seq_no, id);
+                    if id.shard.workchain() == -1 { // todo: add is_masterchain() method
+                        res.mc_block_ids.insert(id.seqno, id);
                     }
                 }
-                PackageEntryId::Proof(id) if id.shard_id.is_masterchain() => {
+                PackageEntryId::Proof(id) if id.shard.workchain() == -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, false)?;
 
                     res.blocks
-                        .entry(id.clone())
+                        .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
                         .proof = Some((proof, entry.data));
-                    res.mc_block_ids.insert(id.seq_no, id);
+                    res.mc_block_ids.insert(id.seqno, id);
                 }
-                PackageEntryId::ProofLink(id) if !id.shard_id.is_masterchain() => {
+                PackageEntryId::ProofLink(id) if id.shard.workchain() != -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, true)?;
 
                     res.blocks
-                        .entry(id.clone())
+                        .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
                         .proof = Some((proof, entry.data));
                 }
@@ -58,11 +59,11 @@ impl<'a> ArchiveData<'a> {
         Ok(res)
     }
 
-    pub fn lowest_mc_id(&self) -> Option<&ton_block::BlockIdExt> {
+    pub fn lowest_mc_id(&self) -> Option<&ton_block::BlockId> {
         self.mc_block_ids.values().next()
     }
 
-    pub fn highest_mc_id(&self) -> Option<&ton_block::BlockIdExt> {
+    pub fn highest_mc_id(&self) -> Option<&ton_block::BlockId> {
         self.mc_block_ids.values().rev().next()
     }
 
@@ -70,7 +71,7 @@ impl<'a> ArchiveData<'a> {
         let mc_block_count = self.mc_block_ids.len();
 
         let (left, right) = match (self.lowest_mc_id(), self.highest_mc_id()) {
-            (Some(left), Some(right)) => (left.seq_no, right.seq_no),
+            (Some(left), Some(right)) => (left.seqno, right.seqno),
             _ => return Err(ArchiveDataError::EmptyArchive),
         };
 
@@ -82,9 +83,9 @@ impl<'a> ArchiveData<'a> {
         // Group all block ids by shards
         let mut map = HashMap::default();
         for block_id in self.blocks.keys() {
-            map.entry(block_id.shard_id)
+            map.entry(block_id.shard)
                 .or_insert_with(BTreeSet::new)
-                .insert(block_id.seq_no);
+                .insert(block_id.seqno);
         }
 
         // Check consistency
@@ -146,39 +147,37 @@ impl ArchiveDataEntry<'_> {
 }
 
 pub fn deserialize_block(
-    id: &ton_block::BlockIdExt,
-    mut data: &[u8],
+    id: &ton_block::BlockId,
+     data: &[u8],
 ) -> Result<ton_block::Block, ArchiveDataError> {
-    let file_hash = ton_types::UInt256::calc_file_hash(data);
-    if id.file_hash() != file_hash {
+    let file_hash = sha2::Sha256::digest(data);
+    if id.file_hash.as_slice() != file_hash.as_slice() {
         Err(ArchiveDataError::InvalidFileHash)
     } else {
-        let root = ton_types::deserialize_tree_of_cells(&mut data)
+        let root = everscale_types::boc::Boc::decode(data)
             .map_err(|_| ArchiveDataError::InvalidBlockData)?;
-        if id.root_hash != root.repr_hash() {
+        if &id.root_hash != root.repr_hash() {
             return Err(ArchiveDataError::InvalidRootHash);
         }
 
-        ton_block::Block::construct_from(&mut root.into())
+        ton_block::Block::load_from(&mut root.as_slice())
             .map_err(|_| ArchiveDataError::InvalidBlockData)
     }
 }
 
 pub fn deserialize_block_proof(
-    block_id: &ton_block::BlockIdExt,
-    mut data: &[u8],
+    block_id: &everscale_types::models::BlockId,
+     data: &[u8],
     is_link: bool,
 ) -> Result<ton_block::BlockProof, ArchiveDataError> {
-    let root = ton_types::deserialize_tree_of_cells(&mut data)
-        .map_err(|_| ArchiveDataError::InvalidBlockProof)?;
-    let proof = ton_block::BlockProof::construct_from(&mut root.into())
-        .map_err(|_| ArchiveDataError::InvalidBlockProof)?;
+    let root = everscale_types::boc::Boc::decode(data).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
+    let proof = everscale_types::models::BlockProof::load_from(&mut root.as_slice()).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
 
     if &proof.proof_for != block_id {
         return Err(ArchiveDataError::ProofForAnotherBlock);
     }
 
-    if !block_id.shard_id.is_masterchain() && !is_link {
+    if !block_id.shard.workchain() == -1 && !is_link {
         Err(ArchiveDataError::ProofForNonMasterchainBlock)
     } else {
         Ok(proof)
@@ -187,10 +186,10 @@ pub fn deserialize_block_proof(
 
 fn contains_previous_block(
     map: &HashMap<ton_block::ShardIdent, BTreeSet<u32>>,
-    shard_ident: &ton_block::ShardIdent,
+    shard_ident: &everscale_types::models::ShardIdent,
     prev_seqno: u32,
 ) -> bool {
-    if let Ok((left, right)) = shard_ident.split() {
+    if let Some((left, right)) = shard_ident.split() {
         // Check case after merge in the same archive in the left child
         if let Some(ids) = map.get(&left) {
             // Search prev seqno in the left shard
@@ -208,7 +207,7 @@ fn contains_previous_block(
         }
     }
 
-    if let Ok(parent) = shard_ident.merge() {
+    if let Some(parent) = shard_ident.merge() {
         // Check case after second split in the same archive
         if let Some(ids) = map.get(&parent) {
             // Search prev shard in the parent shard
