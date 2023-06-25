@@ -284,7 +284,7 @@ fn check_filename(os_name: &OsStr) -> bool {
             }
         }
     }
-    println!("Bad archive found: {os_name:?}");
+    println!("Archive is not needed: {os_name:?}");
     false
 }
 
