@@ -26,7 +26,12 @@ impl<'a> ArchiveData<'a> {
             match PackageEntryId::from_filename(entry.name)? {
                 PackageEntryId::Block(id) => {
                     let block = deserialize_block(&id, entry.data)?;
-                    println!("Deserialized block: {}", block.info.load()?.seqno);
+                    if let Ok(info) = block.info.load() {
+                        println!("Deserialized block: {}", info.seqno);
+                    } else {
+                        println!("failed to deser block");
+                    }
+
 
                     res.blocks
                         .entry(id)
