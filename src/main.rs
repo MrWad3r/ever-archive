@@ -380,7 +380,7 @@ impl CmdUpload {
         let s3_client = runner.block_on(archive_uploader::ArchiveUploader::new(config)).context("Failed to create s3 client")?;
 
         let (files, pg) = init_archive_walker(self.path);
-        let semaphore = Arc::new(Semaphore::new(128));
+        let semaphore = Arc::new(Semaphore::new(10));
         let barier = Arc::new(Barrier::new(files.len() + 1));
 
         for file in files {
