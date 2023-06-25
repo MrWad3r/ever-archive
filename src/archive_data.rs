@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 use everscale_types::cell::Load;
 use sha2::Digest;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::archive_package::*;
 use crate::package_entry_id::*;
@@ -27,23 +27,33 @@ impl<'a> ArchiveData<'a> {
                 PackageEntryId::Block(id) => {
                     let block = deserialize_block(&id, entry.data)?;
                     if let Ok(info) = block.info.load() {
-                        println!("Deserialized block: {}", info.seqno);
+                        println!(
+                            "Deserialized block: {}:{}:{}",
+                            info.shard.workchain(),
+                            info.shard.prefix(),
+                            info.seqno
+                        );
                     } else {
                         println!("failed to deser block");
                     }
-
 
                     res.blocks
                         .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
                         .block = Some((block, entry.data));
-                    if id.shard.workchain() == -1 { // todo: add is_masterchain() method
+                    if id.shard.workchain() == -1 {
+                        // todo: add is_masterchain() method
                         res.mc_block_ids.insert(id.seqno, id);
                     }
                 }
                 PackageEntryId::Proof(id) if id.shard.workchain() == -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, false)?;
-                    println!("Deserialized proof for: {}", proof.proof_for.seqno);
+                    println!(
+                        "Deserialized proof for: {}:{}:{}",
+                        proof.proof_for.shard.workchain(),
+                        proof.proof_for.shard.prefix(),
+                        proof.proof_for.seqno
+                    );
 
                     res.blocks
                         .entry(id)
@@ -53,7 +63,12 @@ impl<'a> ArchiveData<'a> {
                 }
                 PackageEntryId::ProofLink(id) if id.shard.workchain() != -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, true)?;
-                    println!("Deserialized proof link for: {}", proof.proof_for.seqno);
+                    println!(
+                        "Deserialized proof link for: {}:{}:{}",
+                        proof.proof_for.shard.workchain(),
+                        proof.proof_for.shard.prefix(),
+                        proof.proof_for.seqno
+                    );
                     res.blocks
                         .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
@@ -155,7 +170,7 @@ impl ArchiveDataEntry<'_> {
 
 pub fn deserialize_block(
     id: &ton_block::BlockId,
-     data: &[u8],
+    data: &[u8],
 ) -> Result<ton_block::Block, ArchiveDataError> {
     let file_hash = sha2::Sha256::digest(data);
     if id.file_hash.as_slice() != file_hash.as_slice() {
@@ -174,11 +189,13 @@ pub fn deserialize_block(
 
 pub fn deserialize_block_proof(
     block_id: &everscale_types::models::BlockId,
-     data: &[u8],
+    data: &[u8],
     is_link: bool,
 ) -> Result<ton_block::BlockProof, ArchiveDataError> {
-    let root = everscale_types::boc::Boc::decode(data).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
-    let proof = everscale_types::models::BlockProof::load_from(&mut root.as_slice()).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
+    let root =
+        everscale_types::boc::Boc::decode(data).map_err(|_| ArchiveDataError::InvalidBlockProof)?;
+    let proof = everscale_types::models::BlockProof::load_from(&mut root.as_slice())
+        .map_err(|_| ArchiveDataError::InvalidBlockProof)?;
 
     if &proof.proof_for != block_id {
         return Err(ArchiveDataError::ProofForAnotherBlock);
