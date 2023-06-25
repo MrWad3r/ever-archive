@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -250,8 +251,8 @@ impl CmdCheck {
 fn init_archive_walker(path: PathBuf) -> (Vec<PathBuf>, ProgressBar) {
     let mut files: Vec<_> = walkdir::WalkDir::new(path).into_iter().filter_map(|x| x.ok())
         .filter(|x| x.file_type().is_file()).map(|x| x.into_path()).
-        filter(|x| if let Some(ext) = x.extension() {
-            ext == "pack"
+        filter(|x| if let Some(name) = x.file_name() {
+            check_filename(name)
         } else { false }
         ).collect();
 
@@ -262,6 +263,23 @@ fn init_archive_walker(path: PathBuf) -> (Vec<PathBuf>, ProgressBar) {
             .unwrap()
             .progress_chars("##-"));
     (files, pg)
+}
+
+fn check_filename(os_name: &OsStr) -> bool {
+    if let Some(name) = os_name.to_str() {
+        let mut name = name.to_string();
+        if name.starts_with("0") {
+            name.replace_range(0..1, "");
+        }
+        if let Ok(seqno) = name.parse::<u64>() {
+            if seqno >= 11650126u64 && seqno <= 12983255u64 {
+                println!("Found suitable archive: {seqno}");
+                return true;
+            }
+        }
+    }
+    println!("Bad archive found: {os_name:?}");
+    false
 }
 
 /// Lists all archive package entries
