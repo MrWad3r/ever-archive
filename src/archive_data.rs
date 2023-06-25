@@ -26,6 +26,7 @@ impl<'a> ArchiveData<'a> {
             match PackageEntryId::from_filename(entry.name)? {
                 PackageEntryId::Block(id) => {
                     let block = deserialize_block(&id, entry.data)?;
+                    println!("Deserialized block: {}", block.info.load()?.seqno);
 
                     res.blocks
                         .entry(id)
@@ -37,6 +38,7 @@ impl<'a> ArchiveData<'a> {
                 }
                 PackageEntryId::Proof(id) if id.shard.workchain() == -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, false)?;
+                    println!("Deserialized proof for: {}", proof.proof_for.seqno);
 
                     res.blocks
                         .entry(id)
@@ -46,7 +48,7 @@ impl<'a> ArchiveData<'a> {
                 }
                 PackageEntryId::ProofLink(id) if id.shard.workchain() != -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, true)?;
-
+                    println!("Deserialized proof link for: {}", proof.proof_for.seqno);
                     res.blocks
                         .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
