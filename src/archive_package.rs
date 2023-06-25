@@ -48,8 +48,10 @@ impl<'a> ArchivePackageEntryView<'a> {
             return Ok(None);
         }
 
-        println!("offset: {offset}");
+
         if buf[*offset..*offset + 2] != ARCHIVE_ENTRY_PREFIX {
+            println!("offset: {offset}");
+            println!("hex: {}", hex::encode(buf[*offset..*offset + 2]));
             return Err(ArchivePackageError::InvalidArchiveEntryHeader);
         }
         *offset += 2;
