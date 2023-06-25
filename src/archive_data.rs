@@ -27,12 +27,12 @@ impl<'a> ArchiveData<'a> {
                 PackageEntryId::Block(id) => {
                     let block = deserialize_block(&id, entry.data)?;
                     if let Ok(info) = block.info.load() {
-                        println!(
-                            "Deserialized block: {}:{}:{}",
-                            info.shard.workchain(),
-                            hex::encode(info.shard.prefix().to_be_bytes()),
-                            info.seqno
-                        );
+                        // println!(
+                        //     "Deserialized block: {}:{}:{}",
+                        //     info.shard.workchain(),
+                        //     hex::encode(info.shard.prefix().to_be_bytes()),
+                        //     info.seqno
+                        // );
                     } else {
                         println!("failed to deser block");
                     }
@@ -48,12 +48,12 @@ impl<'a> ArchiveData<'a> {
                 }
                 PackageEntryId::Proof(id) if id.shard.workchain() == -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, false)?;
-                    println!(
-                        "Deserialized proof for: {}:{}:{}",
-                        proof.proof_for.shard.workchain(),
-                        hex::encode(proof.proof_for.shard.prefix().to_be_bytes()),
-                        proof.proof_for.seqno
-                    );
+                    // println!(
+                    //     "Deserialized proof for: {}:{}:{}",
+                    //     proof.proof_for.shard.workchain(),
+                    //     hex::encode(proof.proof_for.shard.prefix().to_be_bytes()),
+                    //     proof.proof_for.seqno
+                    // );
 
                     res.blocks
                         .entry(id)
@@ -63,12 +63,12 @@ impl<'a> ArchiveData<'a> {
                 }
                 PackageEntryId::ProofLink(id) if id.shard.workchain() != -1 => {
                     let proof = deserialize_block_proof(&id, entry.data, true)?;
-                    println!(
-                        "Deserialized proof link for: {}:{}:{}",
-                        proof.proof_for.shard.workchain(),
-                        hex::encode(proof.proof_for.shard.prefix().to_be_bytes()),
-                        proof.proof_for.seqno
-                    );
+                    // println!(
+                    //     "Deserialized proof link for: {}:{}:{}",
+                    //     proof.proof_for.shard.workchain(),
+                    //     hex::encode(proof.proof_for.shard.prefix().to_be_bytes()),
+                    //     proof.proof_for.seqno
+                    // );
                     res.blocks
                         .entry(id)
                         .or_insert_with(ArchiveDataEntry::default)
