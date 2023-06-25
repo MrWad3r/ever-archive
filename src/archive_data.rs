@@ -30,7 +30,7 @@ impl<'a> ArchiveData<'a> {
                         println!(
                             "Deserialized block: {}:{}:{}",
                             info.shard.workchain(),
-                            info.shard.prefix(),
+                            hex::encode(info.shard.prefix().to_be_bytes()),
                             info.seqno
                         );
                     } else {
@@ -51,7 +51,7 @@ impl<'a> ArchiveData<'a> {
                     println!(
                         "Deserialized proof for: {}:{}:{}",
                         proof.proof_for.shard.workchain(),
-                        proof.proof_for.shard.prefix(),
+                        hex::encode(proof.proof_for.shard.prefix().to_be_bytes()),
                         proof.proof_for.seqno
                     );
 
@@ -66,7 +66,7 @@ impl<'a> ArchiveData<'a> {
                     println!(
                         "Deserialized proof link for: {}:{}:{}",
                         proof.proof_for.shard.workchain(),
-                        proof.proof_for.shard.prefix(),
+                        hex::encode(proof.proof_for.shard.prefix().to_be_bytes()),
                         proof.proof_for.seqno
                     );
                     res.blocks

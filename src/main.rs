@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,13 +13,12 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tikv_jemallocator::Jemalloc;
 use tokio::sync::{Barrier, Semaphore};
 
-use ever_archive::*;
 use ever_archive::utils::*;
+use ever_archive::*;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
-
 
 fn main() {
     if let Err(e) = argh::from_env::<App>().run() {
@@ -168,15 +167,16 @@ impl CmdCheck {
 
             let mut shards = SeqNoMap::new();
             shards.insert(id.shard, *id);
-            custom.shards.iter()
-                .filter_map(|x|
-                    match x {
-                        Ok(t) => { Some((t.0, t.1)) }
-                        Err(e) => {
-                            eprintln!("Invalid shard description in mc block {id}: {e}");
-                            None
-                        }
-                    })
+            custom
+                .shards
+                .iter()
+                .filter_map(|x| match x {
+                    Ok(t) => Some((t.0, t.1)),
+                    Err(e) => {
+                        eprintln!("Invalid shard description in mc block {id}: {e}");
+                        None
+                    }
+                })
                 .for_each(|(ident, descr)| {
                     shards.insert(
                         ident,
@@ -211,7 +211,6 @@ impl CmdCheck {
             let info = block
                 .load_info()
                 .with_context(|| format!("Invalid block data ({id})"))?;
-
 
             if info.key_block {
                 key_blocks.ids.insert(id);
@@ -249,12 +248,19 @@ impl CmdCheck {
 }
 
 fn init_archive_walker(path: PathBuf) -> (Vec<PathBuf>, ProgressBar) {
-    let mut files: Vec<_> = walkdir::WalkDir::new(path).into_iter().filter_map(|x| x.ok())
-        .filter(|x| x.file_type().is_file()).map(|x| x.into_path()).
-        filter(|x| if let Some(name) = x.file_name() {
-            check_filename(name)
-        } else { false }
-        ).collect();
+    let mut files: Vec<_> = walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|x| x.ok())
+        .filter(|x| x.file_type().is_file())
+        .map(|x| x.into_path())
+        .filter(|x| {
+            if let Some(name) = x.file_name() {
+                check_filename(name)
+            } else {
+                false
+            }
+        })
+        .collect();
 
     files.sort();
 
@@ -375,13 +381,15 @@ impl CmdUpload {
             archives_search_interval_sec: 600,
             retry_interval_ms: 100,
             credentials: Some(creds),
-
         };
-        let s3_client = runner.block_on(archive_uploader::ArchiveUploader::new(config)).context("Failed to create s3 client")?;
+        let s3_client = runner
+            .block_on(archive_uploader::ArchiveUploader::new(config))
+            .context("Failed to create s3 client")?;
 
         let (files, pg) = init_archive_walker(self.path);
         let semaphore = Arc::new(Semaphore::new(4));
         let barier = Arc::new(Barrier::new(files.len() + 1));
+        let f = Arc::new(tokio::sync::Mutex::new(File::create("bad_archives")?));
 
         for file in files {
             let semaphore = semaphore.clone();
@@ -389,6 +397,7 @@ impl CmdUpload {
             let pg = pg.clone();
             let barier = barier.clone();
 
+            let f = f.clone();
             runner.spawn(async move {
                 let permit = semaphore.acquire().await.unwrap();
                 let data = match tokio::fs::read(&file).await {
@@ -401,6 +410,16 @@ impl CmdUpload {
                 let archive = match ArchiveData::new(&data) {
                     Ok(archive) => archive,
                     Err(e) => {
+                        if let Some(name) = file.file_name() {
+                            if let Some(name) = name.to_str() {
+                                let mut guard = f.lock().await;
+                                let target = format!("{}\n", name);
+                                if let Err(e) = guard.write(target.as_bytes()) {
+                                    println!("failed to write file. {e:?}");
+                                }
+                            }
+                        }
+
                         eprintln!("Failed to parse archive {}: {}", file.display(), e);
                         return;
                     }
@@ -431,7 +450,6 @@ impl CmdUpload {
         Ok(())
     }
 }
-
 
 enum RawArchive {
     Bytes(Vec<u8>),
