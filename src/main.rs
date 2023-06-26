@@ -253,13 +253,13 @@ fn init_archive_walker(path: PathBuf) -> (Vec<PathBuf>, ProgressBar) {
         .filter_map(|x| x.ok())
         .filter(|x| x.file_type().is_file())
         .map(|x| x.into_path())
-        .filter(|x| {
-            if let Some(name) = x.file_name() {
-                check_filename(name)
-            } else {
-                false
-            }
-        })
+        // .filter(|x| {
+        //     if let Some(name) = x.file_name() {
+        //         check_filename(name)
+        //     } else {
+        //         false
+        //     }
+        // })
         .collect();
 
     files.sort();
